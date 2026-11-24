@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sunny Pirates II - Private Server GM Panel</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; }
+    header { background: #161b22; border-bottom: 1px solid #30363d; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; }
+    h1 { margin: 0; font-size: 18px; color: #58a6ff; }
+    nav a { color: #8b949e; text-decoration: none; margin-left: 16px; }
+    nav a:hover { color: #58a6ff; }
+    .container { max-width: 1100px; margin: 24px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+    .card.full { grid-column: 1 / -1; }
+    h2 { margin: 0 0 12px; font-size: 15px; color: #79c0ff; }
+    label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 4px; }
+    input, select { width: 100%; box-sizing: border-box; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font-size: 13px; }
+    button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; margin-top: 10px; margin-right: 6px; }
+    button:hover { background: #2ea043; }
+    button.blue { background: #1f6feb; }
+    button.blue:hover { background: #388bfd; }
+    .row { display: flex; gap: 8px; }
+    .row > div { flex: 1; }
+    #toast { margin-top: 8px; font-size: 13px; color: #7ee787; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Sunny Pirates II - Private Server GM Panel</h1>
+    <nav>
+      <a href="/logs" target="_blank">Live Logs</a>
+      <a href="/status" target="_blank">Status JSON</a>
+    </nav>
+  </header>
+
+  <div class="container">
+    <div class="card full">
+      <h2>1. Select Player</h2>
+      <div class="row">
+        <div>
+          <select id="playerSelect"></select>
+        </div>
+        <div style="flex: 0 0 auto;">
+          <button class="blue" style="margin-top:0" onclick="loadPlayers()">Refresh</button>
+          <button class="blue" style="margin-top:0" onclick="unlockAllMaps()">Unlock All Stages (3-Star)</button>
+        </div>
+      </div>
+      <div id="playerInfo" style="margin-top:8px;font-size:13px;color:#8b949e;"></div>
+      <div id="toast"></div>
+    </div>
+
+    <div class="card">
+      <h2>2. Grant Resources & VIP</h2>
+      <div class="row">
+        <div><label>Gems (102)</label><input id="gemAmt" type="number" value="100000" /></div>
+        <div><label>Coins (101)</label><input id="coinAmt" type="number" value="10000000" /></div>
+      </div>
+      <div class="row">
+        <div><label>Action Point (99)</label><input id="apAmt" type="number" value="500" /></div>
+        <div><label>Team EXP (100)</label><input id="expAmt" type="number" value="5000" /></div>
+      </div>
+      <label>Set VIP Level (0-16)</label>
+      <input id="vipLv" type="number" min="0" max="16" placeholder="Leave blank to keep current" />
+      <button onclick="grantResources()">Apply Resources</button>
+    </div>
+
+    <div class="card">
+      <h2>3. Add Hero (Role)</h2>
+      <label>Filter Hero</label>
+      <input id="roleFilter" placeholder="Type name or ID (e.g. Luffy, Zoro, 100101)..." oninput="filterRoles()" />
+      <label>Select Hero</label>
+      <select id="roleSelect"></select>
+      <label>Initial Star (1-5)</label>
+      <input id="roleStar" type="number" min="1" max="5" value="5" />
+      <button onclick="addRole()">Add Hero to Crew</button>
+    </div>
+
+    <div class="card">
+      <h2>4. Add Bag Item</h2>
+      <label>Filter Item</label>
+      <input id="itemFilter" placeholder="Type name or ID (e.g. 120, 20004)..." oninput="filterItems()" />
+      <label>Select Item</label>
+      <select id="itemSelect"></select>
+      <label>Count</label>
+      <input id="itemCount" type="number" value="50" />
+      <button onclick="addItem()">Add Item</button>
+    </div>
+
+    <div class="card">
+      <h2>5. Send GM Mail</h2>
+      <label>Title</label>
+      <input id="mailTitle" value="GM Gift" />
+      <label>Body</label>
+      <input id="mailBody" value="Enjoy your rewards!" />
+      <div class="row">
+        <div><label>Entity ID</label><input id="mailEntityId" type="number" value="102" /></div>
+        <div><label>Count</label><input id="mailCount" type="number" value="50000" /></div>
+      </div>
+      <button onclick="sendMail()">Send Mail</button>
+    </div>
+  </div>
+
+  <script>
+    let allRoles = [], allItems = [], players = [];
+
+    function toast(msg, err) {
+      const el = document.getElementById('toast');
+      el.style.color = err ? '#ff7b72' : '#7ee787';
+      el.textContent = msg;
+    }
+
+    async function loadCatalog() {
+      const r = await fetch('/api/gm/catalog');
+      const d = await r.json();
+      allRoles = d.roles || [];
+      allItems = d.items || [];
+      filterRoles();
+      filterItems();
+    }
+
+    function filterRoles() {
+      const q = document.getElementById('roleFilter').value.toLowerCase();
+      const sel = document.getElementById('roleSelect');
+      const list = allRoles.filter(r => !q || String(r.kindId).includes(q) || (r.name || '').toLowerCase().includes(q)).slice(0, 150);
+      sel.innerHTML = list.map(r => `<option value="${r.kindId}">[${r.kindId}] ${r.name} (Group ${r.group})</option>`).join('');
+    }
+
+    function filterItems() {
+      const q = document.getElementById('itemFilter').value.toLowerCase();
+      const sel = document.getElementById('itemSelect');
+      const list = allItems.filter(i => !q || String(i.kindId).includes(q) || (i.name || '').toLowerCase().includes(q)).slice(0, 150);
+      sel.innerHTML = list.map(i => `<option value="${i.kindId}">[${i.kindId}] ${i.name} (${i.type})</option>`).join('');
+    }
+
+    async function loadPlayers() {
+      const r = await fetch('/api/gm/players');
+      const d = await r.json();
+      players = d.players || [];
+      const sel = document.getElementById('playerSelect');
+      sel.innerHTML = players.map(p => `<option value="${p.id}">[${p.id}] ${p.name} (Lv.${p.level}, VIP${p.vip}, Gem:${p.gem})</option>`).join('');
+      updatePlayerInfo();
+    }
+
+    function updatePlayerInfo() {
+      const pid = document.getElementById('playerSelect').value;
+      const p = players.find(x => String(x.id) === String(pid));
+      document.getElementById('playerInfo').textContent = p
+        ? `Account: ${p.userName} | Lv.${p.level} | VIP ${p.vip} | Power: ${p.power} | Gems: ${p.gem} | Coins: ${p.coin} | Heroes: ${p.roleCount}`
+        : 'No players yet. Log in from the APK to auto-create a player!';
+    }
+    document.getElementById('playerSelect').addEventListener('change', updatePlayerInfo);
+
+    async function gmPost(payload) {
+      const playerId = document.getElementById('playerSelect').value;
+      if (!playerId) return toast('No player selected', true);
+      const r = await fetch('/api/gm/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId, ...payload })
+      });
+      const d = await r.json();
+      if (!d.ok) return toast(d.error || 'Error', true);
+      toast(`Success! Updated ${d.player.name} (Gem=${d.player.gem}, Coin=${d.player.coin}, Lv=${d.player.level}, VIP=${d.player.vip})`);
+      loadPlayers();
+    }
+
+    function grantResources() {
+      gmPost({
+        action: 'addResources',
+        gem: document.getElementById('gemAmt').value,
+        coin: document.getElementById('coinAmt').value,
+        ap: document.getElementById('apAmt').value,
+        exp: document.getElementById('expAmt').value,
+        vipLevel: document.getElementById('vipLv').value
+      });
+    }
+    function addRole() {
+      gmPost({ action: 'addRole', kindId: document.getElementById('roleSelect').value, star: document.getElementById('roleStar').value });
+    }
+    function addItem() {
+      gmPost({ action: 'addItem', kindId: document.getElementById('itemSelect').value, count: document.getElementById('itemCount').value });
+    }
+    function unlockAllMaps() {
+      gmPost({ action: 'unlockAllMaps' });
+    }
+    function sendMail() {
+      gmPost({
+        action: 'sendMail',
+        title: document.getElementById('mailTitle').value,
+        body: document.getElementById('mailBody').value,
+        kindId: document.getElementById('mailEntityId').value,
+        count: document.getElementById('mailCount').value
+      });
+    }
+
+    loadCatalog();
+    loadPlayers();
+  </script>
+</body>
+</html>

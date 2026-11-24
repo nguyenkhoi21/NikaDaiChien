@@ -1,0 +1,13 @@
+{
+  "name": "nikadaichien-server",
+  "version": "1.0.0",
+  "description": "Standalone Online Private Server for Sunny Pirates II (Nika Dai Chien)",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}

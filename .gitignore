@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.tmp
+*.log
+data/accounts.json
+data/players.json
+data/guilds.json
+data/arena.json
+data/meta.json
