@@ -1,0 +1,13 @@
+
+buff_274.png
+size: 79,78
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+buff73_1
+  rotate: false
+  xy: 2, 2
+  size: 75, 74
+  orig: 75, 78
+  offset: 0, 4
+  index: -1

@@ -1,0 +1,27 @@
+
+buff_280.png
+size: 676,820
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+A_glow_orange_half-2
+  rotate: false
+  xy: 350, 2
+  size: 108, 64
+  orig: 128, 75
+  offset: 10, 1
+  index: -1
+e207_ef1
+  rotate: true
+  xy: 2, 18
+  size: 800, 346
+  orig: 800, 346
+  offset: 0, 0
+  index: -1
+e207_ef2
+  rotate: true
+  xy: 350, 68
+  size: 750, 324
+  orig: 800, 346
+  offset: 25, 11
+  index: -1

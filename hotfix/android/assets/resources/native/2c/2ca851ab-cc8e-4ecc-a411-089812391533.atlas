@@ -1,0 +1,13 @@
+
+buff_275.png
+size: 225,105
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+buff271
+  rotate: false
+  xy: 2, 2
+  size: 221, 101
+  orig: 256, 256
+  offset: 17, 78
+  index: -1

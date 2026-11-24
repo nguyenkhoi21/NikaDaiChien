@@ -1,0 +1,20 @@
+
+buff_271.png
+size: 238,180
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+A_juji
+  rotate: true
+  xy: 2, 2
+  size: 176, 180
+  orig: 256, 256
+  offset: 32, 32
+  index: -1
+buff267
+  rotate: false
+  xy: 184, 104
+  size: 52, 74
+  orig: 84, 96
+  offset: 18, 9
+  index: -1
