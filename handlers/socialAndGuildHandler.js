@@ -1,5 +1,39 @@
 const { db, markDirty, allocGuildId } = require("../db/database");
+const { zipBase64 } = require("../net/pomeloProtocol");
 const playerService = require("../services/playerService");
+
+function formatGuildListSummary(g, rank) {
+  return {
+    id: g.id,
+    name: g.name,
+    badgeId: g.badgeId || 1,
+    chairmanName: g.chairmanName || "Captain",
+    activePoint: g.activePoint || 0,
+    joinLevelLimit: g.joinLevelLimit || 1,
+    joinRequireType: g.joinRequireType || 1,
+    menberCount: (g.memberIds && g.memberIds.length) || (g.members && g.members.length) || 1,
+    level: g.level || 1,
+    maxMemberCount: g.maxMemberCount || 25,
+    rank
+  };
+}
+
+function normalizeGuildObj(g) {
+  if (!g) return null;
+  if (!Array.isArray(g.memberIds)) {
+    g.memberIds = Array.isArray(g.members) ? g.members.map((m) => m.playerId) : [];
+  }
+  if (!g.chairmanName) {
+    const ch = Array.isArray(g.members) ? g.members[0] : null;
+    g.chairmanName = (ch && ch.playerName) || "Captain";
+  }
+  if (g.joinLevelLimit === undefined) g.joinLevelLimit = 1;
+  if (!Array.isArray(g.logList)) g.logList = [];
+  if (g.drumTimes === undefined) g.drumTimes = 0;
+  if (g.openBoxTimes === undefined) g.openBoxTimes = 0;
+  if (g.maxMemberCount === undefined) g.maxMemberCount = 25;
+  return g;
+}
 
 function handleSocialAndGuildRoute(route, msg, player) {
   if (route.startsWith("logic.mailHandler.")) {
@@ -56,17 +90,27 @@ function handleSocialAndGuildRoute(route, msg, player) {
       if (player.guildId) return { code: 500, msg: "Already in guild" };
       if (!playerService.reduceEntity(player, 102, 500, sync)) return { code: 500, msg: "Not enough gems" };
       const gid = allocGuildId();
+      const now = Date.now();
       const guild = {
         id: gid,
+        serverId: player.serverId || 1,
         name: String(msg.name || "StrawHat"),
         badgeId: Number(msg.badgeId || 1),
         level: 1,
         activePoint: 0,
+        maxMemberCount: 25,
         notice: "Welcome to our guild!",
         joinRequireType: 1,
+        joinLevelLimit: 1,
         joinRequireLevel: 1,
         chairmanId: player.id,
-        chairmanAtime: Date.now(),
+        chairmanName: player.name,
+        chairmanAtime: now,
+        ctime: now,
+        atime: now,
+        drumTimes: 0,
+        openBoxTimes: 0,
+        memberIds: [player.id],
         members: [
           {
             playerId: player.id,
@@ -78,6 +122,7 @@ function handleSocialAndGuildRoute(route, msg, player) {
             photoInfo: player.photoInfo
           }
         ],
+        logList: [{ playerId: player.id, playerName: player.name, msg: "创建公会", ctime: now }],
         applies: []
       };
       db.guilds[String(gid)] = guild;
@@ -86,23 +131,88 @@ function handleSocialAndGuildRoute(route, msg, player) {
       markDirty("guilds");
       sync.guildId = gid;
       sync.guildName = guild.name;
-      sync._temp.guild = guild;
+      sync.guild = guild;
       return sync;
     }
 
     if (action === "info") {
-      const guild = player.guildId ? db.guilds[String(player.guildId)] : null;
-      sync._temp.guild = guild || null;
+      const guild = player.guildId ? normalizeGuildObj(db.guilds[String(player.guildId)]) : null;
+      if (guild) sync.guild = guild;
       return sync;
     }
 
     if (action === "list") {
-      sync._temp.list = Object.values(db.guilds);
+      let guilds = Object.values(db.guilds);
+      if (guilds.length === 0) {
+        const gid = allocGuildId();
+        const now = Date.now();
+        const npcGuild = {
+          id: gid,
+          serverId: player.serverId || 1,
+          name: "StrawHat",
+          badgeId: 1,
+          level: 1,
+          activePoint: 1000,
+          maxMemberCount: 25,
+          notice: "Welcome to StrawHat Fleet!",
+          joinRequireType: 1,
+          joinLevelLimit: 1,
+          chairmanId: 999999,
+          chairmanName: "Luffy",
+          chairmanAtime: now,
+          ctime: now,
+          atime: now,
+          drumTimes: 0,
+          openBoxTimes: 0,
+          memberIds: [],
+          members: [],
+          logList: [],
+          applies: []
+        };
+        db.guilds[String(gid)] = npcGuild;
+        markDirty("guilds");
+        guilds = [npcGuild];
+      }
+      const list = guilds.map((g, i) => formatGuildListSummary(normalizeGuildObj(g), i + 1));
+      return {
+        code: 200,
+        _temp: {
+          _decodeKeys: ["list"],
+          list: zipBase64(list),
+          route
+        }
+      };
+    }
+
+    if (action === "applyJoin") {
+      const gid = String(msg.guildId || "");
+      const guild = normalizeGuildObj(db.guilds[gid]);
+      if (!guild) return { code: 500, msg: "Guild not found" };
+      if (!guild.memberIds.includes(player.id)) {
+        guild.memberIds.push(player.id);
+        guild.members.push({
+          playerId: player.id,
+          playerName: player.name,
+          level: player.level,
+          power: player.power,
+          role: 3,
+          contribution: 0,
+          photoInfo: player.photoInfo
+        });
+        guild.logList.push({ playerId: player.id, playerName: player.name, msg: "加入公会", ctime: Date.now() });
+      }
+      player.guildId = guild.id;
+      player.guildName = guild.name;
+      player.joinGuildTimes = (player.joinGuildTimes || 0) + 1;
+      markDirty("guilds");
+      sync.guildId = guild.id;
+      sync.guildName = guild.name;
+      sync.joinGuildTimes = player.joinGuildTimes;
       return sync;
     }
 
     if (action === "worship") {
-      const type = Number(msg.type || 1);
+      const type = Number(msg.worshipType || msg.type || 1);
       const ap = type === 3 ? 120 : type === 2 ? 50 : 25;
       playerService.addEntity(player, 99, ap, {}, sync);
       sync._temp.entityCountMap = { 99: ap };
@@ -110,18 +220,40 @@ function handleSocialAndGuildRoute(route, msg, player) {
     }
 
     if (action === "openBox") {
-      sync._temp.entityCountMap = playerService.addDropList(player, [{ entityId: 101, count: 50000 }, { entityId: 107, count: 100 }], sync);
+      const guild = player.guildId ? normalizeGuildObj(db.guilds[String(player.guildId)]) : null;
+      if (guild) {
+        guild.openBoxTimes = (guild.openBoxTimes || 0) + 1;
+        guild.activePoint = Math.max(0, (guild.activePoint || 100) - 5);
+        markDirty("guilds");
+        sync.guild = { openBoxTimes: guild.openBoxTimes, activePoint: guild.activePoint };
+      }
+      sync._temp.entityCountMap = playerService.addDropList(player, [{ entityId: 102, count: 30 }, { entityId: 101, count: 50000 }], sync);
       return sync;
     }
 
     if (action === "drum") {
+      const guild = player.guildId ? normalizeGuildObj(db.guilds[String(player.guildId)]) : null;
+      if (guild) {
+        guild.activePoint = (guild.activePoint || 0) + 60;
+        guild.drumTimes = (guild.drumTimes || 0) + 1;
+        markDirty("guilds");
+        sync.guild = {
+          activePoint: guild.activePoint,
+          drumTimes: guild.drumTimes,
+          level: guild.level || 1,
+          maxMemberCount: guild.maxMemberCount || 25
+        };
+      }
       sync._temp.entityCountMap = playerService.addDropList(player, [{ entityId: 107, count: 300 }], sync);
       return sync;
     }
 
     if (action === "upgradeSkill") {
-      const t = msg.type || "hp";
-      player.guildSkill[t] = (player.guildSkill[t] || 0) + 1;
+      const key = String(msg.type || "HP").toUpperCase();
+      const attrKey = key.toLowerCase();
+      player.guildSkill = player.guildSkill || { levelMap: { HP: 0, ATK: 0, DEF: 0, MDEF: 0 }, attr: { hp: 0, atk: 0, def: 0, mdef: 0 } };
+      player.guildSkill.levelMap[key] = (player.guildSkill.levelMap[key] || 0) + 1;
+      player.guildSkill.attr[attrKey] = (player.guildSkill.attr[attrKey] || 0) + 100;
       sync.guildSkill = player.guildSkill;
       return sync;
     }
@@ -129,7 +261,61 @@ function handleSocialAndGuildRoute(route, msg, player) {
     return sync;
   }
 
+  if (route.startsWith("logic.guildBattleHandler.openInfo")) {
+    return {
+      code: 200,
+      _temp: {
+        openInfo: { openTime: Date.now() + 3600000, isOpen: false },
+        route
+      }
+    };
+  }
+
+  if (route.startsWith("logic.newGuildBattleHandler.openInfo")) {
+    return {
+      code: 200,
+      _temp: {
+        openInfo: {
+          openTime: Date.now() + 3600000,
+          isOpen: true,
+          isReady: false,
+          isHaveTarget: null,
+          preBattleResult: null,
+          defenseTeamInfo: { teamIndexs: [], shipIndexs: [] }
+        },
+        route
+      }
+    };
+  }
+
   if (route.startsWith("logic.friendHandler.")) {
+    const action = route.split(".")[2];
+    if (action === "myFriendList") {
+      return {
+        code: 200,
+        friend: player.friend,
+        _temp: { list: [], route }
+      };
+    }
+    if (action === "recommendList") {
+      const now = Date.now();
+      const others = Object.values(db.players)
+        .filter((p) => Number(p.id) !== Number(player.id))
+        .slice(0, 10)
+        .map((p) => ({
+          playerId: p.id,
+          playerName: p.name,
+          playerLevel: p.level,
+          playerPhotoInfo: p.photoInfo,
+          serverId: p.serverId || 1,
+          atime: p.atime || now,
+          isOnline: true
+        }));
+      return {
+        code: 200,
+        _temp: { list: others, route }
+      };
+    }
     return {
       code: 200,
       _temp: {

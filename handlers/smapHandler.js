@@ -2,7 +2,7 @@ const dataApi = require("../config/dataLoader");
 const serverConfig = require("../config/serverConfig");
 const playerService = require("../services/playerService");
 
-function rollSmapDrops(smap, player) {
+function rollSmapDrops(smap, player, teamIndexs) {
   const dropList = [];
   if (smap.coin) dropList.push({ entityId: 101, count: smap.coin });
   if (smap.actionPoint) {
@@ -22,13 +22,29 @@ function rollSmapDrops(smap, player) {
       if (eid) dropList.push({ entityId: eid, count: val });
     }
   }
-  // Role EXP to participating team
+  // Role EXP to participating team (fallback to all if none passed)
   if (smap.roleExp) {
-    for (const r of Object.values(player.team.roles || {})) {
-      playerService.addRoleExp(r, smap.roleExp, player);
+    const idxs = Array.isArray(teamIndexs) && teamIndexs.length > 0
+      ? teamIndexs.map(String)
+      : Object.keys(player.team.roles || {});
+    for (const idx of idxs) {
+      const r = player.team.roles && player.team.roles[idx];
+      if (r) playerService.addRoleExp(r, smap.roleExp, player);
     }
   }
   return dropList;
+}
+
+function calcTotalStarCount(smapStarMap) {
+  let total = 0;
+  for (const t of Object.values(smapStarMap || {})) {
+    for (const bmap of Object.values(t || {})) {
+      for (const st of Object.values(bmap || {})) {
+        total += Number(st || 0);
+      }
+    }
+  }
+  return total;
 }
 
 function handleSmapRoute(route, msg, player) {
@@ -40,7 +56,7 @@ function handleSmapRoute(route, msg, player) {
     const smap = dataApi.smap.findById(Number(msg.smapId));
     if (!smap) return { code: 500, msg: "Stage not found" };
     player._curSmapId = smap.kindId;
-    return { code: 200, _temp: { route, smapId: smap.kindId } };
+    return { code: 200, _temp: { showEntityIdsMap: {}, route } };
   }
 
   if (action === "endSmap") {
@@ -69,12 +85,23 @@ function handleSmapRoute(route, msg, player) {
       player.smapTimesMap[type][bmapId] = player.smapTimesMap[type][bmapId] || {};
       player.smapTimesMap[type][bmapId][smapId] = (player.smapTimesMap[type][bmapId][smapId] || 0) + 1;
 
-      const drops = rollSmapDrops(smap, player);
+      player.starCount = calcTotalStarCount(player.smapStarMap);
+      if (type === 1 && smapId > (player.task.mapType1SmapId || 0)) {
+        player.task.mapType1SmapId = smapId;
+        sync.task = { mapType1SmapId: smapId };
+      } else if (type === 2 && smapId > (player.task.mapType2SmapId || 0)) {
+        player.task.mapType2SmapId = smapId;
+        sync.task = { mapType2SmapId: smapId };
+      }
+
+      const drops = rollSmapDrops(smap, player, msg.teamIndexs);
       const entityCountMap = playerService.addDropList(player, drops, sync);
       sync.smapStarMap = player.smapStarMap;
       sync.smapTimesMap = player.smapTimesMap;
+      sync.starCount = player.starCount;
       sync.team = { roles: player.team.roles, friendshipAttr: player.team.friendshipAttr };
       sync.power = player.power;
+      sync.topPower = player.topPower;
       sync._temp.entityCountMap = entityCountMap;
     } else {
       sync._temp.entityCountMap = {};
@@ -96,7 +123,7 @@ function handleSmapRoute(route, msg, player) {
 
     const entityCountMapList = [];
     for (let i = 0; i < times; i++) {
-      const drops = rollSmapDrops(smap, player);
+      const drops = rollSmapDrops(smap, player, msg.teamIndexs);
       entityCountMapList.push(playerService.addDropList(player, drops, sync));
     }
 
@@ -110,6 +137,7 @@ function handleSmapRoute(route, msg, player) {
     sync.smapTimesMap = player.smapTimesMap;
     sync.team = { roles: player.team.roles, friendshipAttr: player.team.friendshipAttr };
     sync.power = player.power;
+    sync.topPower = player.topPower;
     sync._temp.entityCountMapList = entityCountMapList;
     sync._temp.extraEntityCountMap = extraEntityCountMap;
     return sync;

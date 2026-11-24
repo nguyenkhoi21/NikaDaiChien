@@ -1,10 +1,38 @@
 const dataApi = require("../config/dataLoader");
 const serverConfig = require("../config/serverConfig");
-const { db, markDirty, saveDb } = require("../db/database");
 const { createRoleRecord, recalcPlayerPower } = require("../models/playerFactory");
 const playerService = require("../services/playerService");
 
-function handleChatCommand(text, player, sync, pushToAll) {
+function parseWeightedDialDesc(desc) {
+  const pool = [];
+  for (const part of String(desc || "").split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const [dropStr, wStr] = trimmed.split("_W");
+    const drops = serverConfig.DROP.FUNS.getDropListByDesc(dropStr);
+    if (drops.length > 0) {
+      pool.push({
+        entityId: drops[0].entityId,
+        count: drops[0].count || 1,
+        weight: Math.max(1, Number(wStr || 10))
+      });
+    }
+  }
+  return pool;
+}
+
+function pickWeightedDialItem(pool) {
+  let total = 0;
+  for (const it of pool) total += it.weight;
+  let r = Math.random() * total;
+  for (const it of pool) {
+    r -= it.weight;
+    if (r <= 0) return { entityId: it.entityId, count: it.count };
+  }
+  return { entityId: pool[0].entityId, count: pool[0].count };
+}
+
+function handleChatCommand(text, player, sync) {
   const parts = text.trim().split(/\s+/);
   const cmd = parts[0].toLowerCase();
 
@@ -43,6 +71,7 @@ function handleChatCommand(text, player, sync, pushToAll) {
     recalcPlayerPower(player);
     sync.team = { roles: { [idx]: role }, friendshipAttr: player.team.friendshipAttr };
     sync.power = player.power;
+    sync.topPower = player.topPower;
     return `Added role ${kindId} (star=${star}).`;
   }
   if (cmd === "/additem") {
@@ -79,6 +108,8 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
       if (!playerService.reduceEntity(player, 102, serverConfig.PLAYER.CONSTS.RE_NAME_COST_GEM, sync)) {
         return { code: 500, msg: "Not enough gems" };
       }
+      player.costGem = (player.costGem || 0) + serverConfig.PLAYER.CONSTS.RE_NAME_COST_GEM;
+      sync.costGem = player.costGem;
     }
     player.name = newName;
     sync.name = newName;
@@ -91,7 +122,12 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
     return sync;
   }
   if (action === "setShipImg") {
-    player.photoInfo.shipImgId = Number(msg.imgId || msg.shipImgId || player.photoInfo.shipImgId);
+    const imgId = Number(msg.imgId || msg.shipImgId || 0);
+    if (imgId >= 600 && imgId < 700) {
+      player.photoInfo.frameId = imgId;
+    } else if (imgId > 0) {
+      player.photoInfo.shipImgId = imgId;
+    }
     sync.photoInfo = player.photoInfo;
     return sync;
   }
@@ -111,7 +147,9 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
     const cost = serverConfig.PLAYER.FUNS.getBuyActionPointCost(times);
     if (!playerService.reduceEntity(player, 102, cost, sync)) return { code: 500, msg: "Not enough gems" };
     player.vip.buyActionPointTimes = times;
+    player.costGem = (player.costGem || 0) + cost;
     playerService.addEntity(player, 99, serverConfig.PLAYER.CONSTS.BUY_ACTION_POINT, {}, sync);
+    sync.costGem = player.costGem;
     sync.vip = { buyActionPointTimes: times };
     return sync;
   }
@@ -122,9 +160,12 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
     if (!playerService.reduceEntity(player, 102, cost, sync)) return { code: 500, msg: "Not enough gems" };
     const { coin, ratio } = serverConfig.PLAYER.FUNS.getBuyCoin(player.vip.level, player.level);
     player.vip.buyCoinTimes = times;
+    player.costGem = (player.costGem || 0) + cost;
     playerService.addEntity(player, 101, coin, {}, sync);
+    sync.costGem = player.costGem;
     sync.vip = { buyCoinTimes: times };
-    sync._temp.coin = coin;
+    sync._temp.costGem = cost;
+    sync._temp.getCoin = coin;
     sync._temp.ratio = ratio;
     return sync;
   }
@@ -134,7 +175,9 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
     const cost = serverConfig.PLAYER.FUNS.getBuySkillPointCost(times);
     if (!playerService.reduceEntity(player, 102, cost, sync)) return { code: 500, msg: "Not enough gems" };
     player.vip.buySkillPointTimes = times;
+    player.costGem = (player.costGem || 0) + cost;
     player.skillPoint = (player.skillPoint || 0) + serverConfig.PLAYER.CONSTS.BUY_SKILL_POINT;
+    sync.costGem = player.costGem;
     sync.vip = { buySkillPointTimes: times };
     sync.skillPoint = player.skillPoint;
     return sync;
@@ -142,7 +185,7 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
 
   if (action === "useItem") {
     const it = player.bag.items[String(msg.bagIndex)];
-    const cnt = Math.max(1, Number(msg.count || 1));
+    const cnt = Math.max(1, Number(msg.itemCount || msg.count || 1));
     if (!it || it.count < cnt) return { code: 500, msg: "Item not found" };
     const meta = dataApi.findEntityById(it.kindId);
     playerService.reduceBagByIdx(player, msg.bagIndex, cnt, sync);
@@ -166,13 +209,22 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
 
   if (action === "selectBoxReward" || action === "selectBoxReward2") {
     const it = player.bag.items[String(msg.bagIndex)];
-    const cnt = Math.max(1, Number(msg.count || 1));
-    if (!it) return { code: 500, msg: "Box not found" };
+    const cnt = Math.max(1, Number(msg.itemCount || msg.count || 1));
+    if (!it || it.count < cnt) return { code: 500, msg: "Box not found" };
     const meta = dataApi.findEntityById(it.kindId);
     playerService.reduceBagByIdx(player, msg.bagIndex, cnt, sync);
-    const list = (meta && meta.dropListDesc) ? serverConfig.DROP.FUNS.getDropListByDesc(meta.dropListDesc) : [{ entityId: 102, count: 100 }];
-    const pick = list[Number(msg.selectIdx || 0)] || list[0];
-    sync._temp.entityCountMap = playerService.addDropList(player, [{ entityId: pick.entityId, count: (pick.count || 1) * cnt, extra: pick.extra }], sync);
+    const list = (meta && meta.dropListDesc)
+      ? serverConfig.DROP.FUNS.getDropListByDesc(meta.dropListDesc)
+      : [{ entityId: 102, count: 100 }];
+    const rewardIdxs = Array.isArray(msg.rewardIdxs) ? msg.rewardIdxs : [Number(msg.selectIdx || 0)];
+    const grants = [];
+    for (const rIdx of rewardIdxs) {
+      const pick = list[Number(rIdx)] || list[0];
+      if (pick) {
+        grants.push({ entityId: pick.entityId, count: (pick.count || 1) * cnt, extra: pick.extra });
+      }
+    }
+    sync._temp.entityCountMap = playerService.addDropList(player, grants, sync);
     return sync;
   }
 
@@ -181,11 +233,13 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
     player.signInTime = Date.now();
     const row = dataApi.signIn.findOneBy("signInDays", player.signInDays) || dataApi.signIn.findById(1);
     const drops = row ? serverConfig.DROP.FUNS.getDropListByDesc(row.dropListDesc) : [{ entityId: 102, count: 500 }];
-    if (row && player.vip.level >= (row.doubleVip || 99)) {
+    const isDouble = !!(row && player.vip.level >= (row.doubleVip || 99));
+    if (isDouble) {
       for (const d of drops) d.count *= 2;
     }
     sync.signInDays = player.signInDays;
     sync.signInTime = player.signInTime;
+    sync._temp.isDouble = isDouble;
     sync._temp.entityCountMap = playerService.addDropList(player, drops, sync);
     return sync;
   }
@@ -226,12 +280,12 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
   }
 
   if (action === "incOnlineTime") {
-    const act = player.activity.map.online_reward;
+    const act = player.activity && player.activity.map && player.activity.map.online_reward;
     if (act && act.reachMap) {
       act.reachMap.onlineSeconds = (act.reachMap.onlineSeconds || 0) + Number(msg.seconds || 10);
-      for (const k of Object.keys(act.rewards || {})) {
-        const r = act.rewards[k];
-        if (r.status === 1 && act.reachMap.onlineSeconds >= (r.needMap.onlineSeconds || 0)) {
+      const list = Array.isArray(act.rewards) ? act.rewards : Object.values(act.rewards || {});
+      for (const r of list) {
+        if (r && r.status === 1 && act.reachMap.onlineSeconds >= ((r.needMap && r.needMap.onlineSeconds) || 0)) {
           r.status = 2;
         }
       }
@@ -241,17 +295,96 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
   }
 
   if (action === "receiveActivityAward" || action === "receiveActivityAward2") {
-    const act = player.activity.map[msg.activityName];
-    const rIdx = msg.rewardIdx;
-    if (act && act.rewards && act.rewards[rIdx]) {
-      const rw = act.rewards[rIdx];
-      rw.status = 3;
-      const drops = rw.dropListDesc ? serverConfig.DROP.FUNS.getDropListByDesc(rw.dropListDesc) : [{ entityId: 102, count: 200 }];
-      sync._temp.entityCountMap = playerService.addDropList(player, drops, sync);
-      sync.activity = { map: { [msg.activityName]: act } };
-    } else {
-      sync._temp.entityCountMap = {};
+    const names = Array.isArray(msg.activityNames)
+      ? msg.activityNames
+      : Array.isArray(msg.activityName)
+        ? msg.activityName
+        : [msg.activityNames || msg.activityName];
+    const idxs = Array.isArray(msg.rewardIdxs)
+      ? msg.rewardIdxs
+      : Array.isArray(msg.rewardIdx)
+        ? msg.rewardIdx
+        : [msg.rewardIdxs !== undefined ? msg.rewardIdxs : msg.rewardIdx];
+
+    const grants = [];
+    const updatedMap = {};
+    for (let i = 0; i < names.length; i++) {
+      const aName = String(names[i] || "");
+      const rIdx = Number(idxs[i] !== undefined ? idxs[i] : 0);
+      const act = player.activity && player.activity.map && player.activity.map[aName];
+      const rw = act && act.rewards && act.rewards[rIdx];
+      if (rw) {
+        rw.status = 3;
+        const drops = rw.dropListDesc
+          ? serverConfig.DROP.FUNS.getDropListByDesc(rw.dropListDesc)
+          : [{ entityId: 102, count: 200 }];
+        grants.push(...drops);
+        updatedMap[aName] = act;
+      }
     }
+    sync._temp.entityCountMap = playerService.addDropList(player, grants, sync);
+    if (Object.keys(updatedMap).length > 0) {
+      sync.activity = { map: updatedMap };
+    }
+    return sync;
+  }
+
+  if (action === "receiveHonourReward") {
+    const lv = Number(msg.level || 1);
+    player.honourReceivedMap = player.honourReceivedMap || {};
+    player.honourReceivedMap[lv] = true;
+    sync.honourReceivedMap = { [lv]: true };
+    sync._temp.entityCountMap = playerService.addDropList(player, [{ entityId: 124, count: 50 }], sync);
+    return sync;
+  }
+
+  if (action === "rollDial") {
+    const type = String(msg.type || "luck");
+    const times = Math.max(1, Math.min(10, Number(msg.times || 1)));
+    const dial = (player.activity && player.activity.dial) || {};
+    const desc = dial[`${type}Desc`] || dial.luckDesc || "364x10_W20,102x100_W15,171x10_W10";
+    const pool = parseWeightedDialDesc(desc);
+    const dropList = [];
+    for (let i = 0; i < times; i++) {
+      dropList.push(pickWeightedDialItem(pool));
+    }
+    playerService.addDropList(player, dropList, sync);
+    sync._temp.dropList = dropList;
+    return sync;
+  }
+
+  if (action === "dreamRoll") {
+    const dream = (player.activity && player.activity.dream) || {};
+    const rewardMap = (dream.activityItem && dream.activityItem.rewardMap) || {};
+    const keys = Object.keys(rewardMap);
+    const boardLen = Math.max(24, keys.length || 24);
+    const point = Number(msg.diyPoint) || (Math.floor(Math.random() * 6) + 1);
+    const nextPos = (((dream.curPos || 0) + point - 1) % boardLen) + 1;
+    dream.curPos = nextPos;
+    const rawDesc = rewardMap[String(nextPos)] || "102x300";
+    const isEvent = rawDesc === "event";
+    const dropDesc = isEvent ? "102x500" : rawDesc;
+    const dropList = serverConfig.DROP.FUNS.getDropListByDesc(dropDesc);
+    playerService.addDropList(player, dropList, sync);
+    dream.logs = Array.isArray(dream.logs) ? dream.logs : [];
+    dream.logs.push({ time: Date.now(), point, dropDesc });
+    if (dream.logs.length > 30) dream.logs.shift();
+    sync.activity = { dream: { curPos: dream.curPos, logs: dream.logs } };
+    sync._temp.dropList = dropList;
+    sync._temp.event = isEvent ? 1 : 0;
+    sync._temp.point = point;
+    return sync;
+  }
+
+  if (action === "scorePoint") {
+    const times = Math.max(1, Math.min(10, Number(msg.times || 1)));
+    const pool = [{ entityId: 102, count: 200 }, { entityId: 120, count: 2 }, { entityId: 20004, count: 5 }];
+    const dropList = [];
+    for (let i = 0; i < times; i++) {
+      dropList.push({ ...pool[i % pool.length] });
+    }
+    playerService.addDropList(player, dropList, sync);
+    sync._temp.dropList = dropList;
     return sync;
   }
 
@@ -259,7 +392,7 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
     const words = String(msg.words || msg.content || "").trim();
     const type = Number(msg.type || 1);
     if (words.startsWith("/")) {
-      const gmReply = handleChatCommand(words, player, sync, pushToAll);
+      const gmReply = handleChatCommand(words, player, sync);
       if (gmReply) {
         const gmChat = {
           type,
@@ -299,7 +432,7 @@ function handlePlayerRoute(route, msg, player, pushToAll) {
   }
 
   if (action === "useGiftCode") {
-    const code = String(msg.code || "").trim().toUpperCase();
+    const code = String(msg.giftCode || msg.code || "").trim().toUpperCase();
     const reward = code === "VIP16"
       ? [{ entityId: 102, count: 100000 }, { entityId: 101, count: 5000000 }]
       : [{ entityId: 102, count: 10000 }, { entityId: 120, count: 20 }, { entityId: 20004, count: 10 }];

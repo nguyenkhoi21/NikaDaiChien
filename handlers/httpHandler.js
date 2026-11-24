@@ -107,7 +107,10 @@ function createHttpHandler({ liveLogs, addLiveLog, connectedSockets, pushToPlaye
         code: 200,
         cdnUrl: baseUrl,
         inReviewPackageInfos: [],
-        runScriptInfo: { script: "" },
+        runScriptInfo: {
+          script:
+            "buildExt.evolveSkillRoleClassIds.push(253);buildExt.evolveSkillRoleClassIds.push(254);var ALLOW_CLASS_IDS = require('serverConfig').WORLD_BOSS.CONSTS.ALLOW_CLASS_IDS;ALLOW_CLASS_IDS.push(253);ALLOW_CLASS_IDS.push(254);"
+        },
         forceUpdate: null
       });
     }
@@ -184,6 +187,7 @@ function createHttpHandler({ liveLogs, addLiveLog, connectedSockets, pushToPlaye
       const acc = db.accounts[userName];
       const existing = acc ? getPlayersByUserId(acc.uid) : [];
       const playerSummaries = existing.map((p) => ({
+        playerId: p.id,
         id: p.id,
         name: p.name,
         level: p.level,

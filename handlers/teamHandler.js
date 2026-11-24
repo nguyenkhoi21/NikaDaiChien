@@ -1,6 +1,6 @@
 const dataApi = require("../config/dataLoader");
 const serverConfig = require("../config/serverConfig");
-const { buildEquipmentItem, recalcRoleAttr, recalcPlayerPower } = require("../models/playerFactory");
+const { buildEquipmentItem, ensureRoleEquipments, recalcRoleAttr, recalcPlayerPower } = require("../models/playerFactory");
 const playerService = require("../services/playerService");
 
 function handleTeamRoute(route, msg, player) {
@@ -14,6 +14,7 @@ function handleTeamRoute(route, msg, player) {
     recalcPlayerPower(player);
     sync.team = { roles: { [r.idx]: r }, friendshipAttr: player.team.friendshipAttr };
     sync.power = player.power;
+    sync.topPower = player.topPower;
   };
 
   if (action === "useExpItem" && role) {
@@ -114,6 +115,7 @@ function handleTeamRoute(route, msg, player) {
   }
 
   if (action === "evolveAllEquipment" && role) {
+    const equipmentTypes = [];
     for (const slot of serverConfig.EQUIPMENTS.CONSTS.EVL_ITEM_TYPES) {
       const eq = role.equipments[slot];
       if (!eq) continue;
@@ -124,8 +126,10 @@ function handleTeamRoute(route, msg, player) {
       const roleMeta = dataApi.findEntityById(role.kindId);
       if (roleMeta && nextMeta && roleMeta.color >= nextMeta.color) {
         role.equipments[slot] = buildEquipmentItem(nextId, eq.level);
+        equipmentTypes.push(slot);
       }
     }
+    sync._temp.equipmentTypes = equipmentTypes;
     syncRole(role);
     return sync;
   }
@@ -135,11 +139,26 @@ function handleTeamRoute(route, msg, player) {
     if (!meta || !meta.evolutionRoleId) return { code: 500, msg: "Cannot evolve role" };
     const nextRole = dataApi.findEntityById(meta.evolutionRoleId);
     if (!nextRole) return { code: 500, msg: "Next role missing" };
+
+    const preRole = { level: role.level, star: role.star, attr: { ...(role.attr || {}) } };
     role.kindId = nextRole.kindId;
-    const unlockSlot = serverConfig.SKILL.CONSTS.UN_LOCK_COLOR[nextRole.color];
-    if (unlockSlot !== undefined && role.skills[unlockSlot] && role.skills[unlockSlot].level === 0) {
-      role.skills[unlockSlot].level = 1;
+    if (Array.isArray(role.skills)) {
+      const m = {};
+      for (const s of role.skills) {
+        if (s && s.kindId && s.level > 0) m[String(s.kindId)] = s;
+      }
+      role.skills = m;
     }
+    role.skills = role.skills || {};
+    const unlockSlot = serverConfig.SKILL.CONSTS.UN_LOCK_COLOR[nextRole.color];
+    const nextSkillIds = nextRole.skillIds || meta.skillIds || [];
+    if (unlockSlot !== undefined && nextSkillIds[unlockSlot]) {
+      const newSid = nextSkillIds[unlockSlot];
+      if (!role.skills[String(newSid)]) {
+        role.skills[String(newSid)] = { kindId: newSid, level: 1 };
+      }
+    }
+    sync._temp.preRole = preRole;
     syncRole(role);
     return sync;
   }
@@ -158,7 +177,10 @@ function handleTeamRoute(route, msg, player) {
   }
 
   if (action === "upgradeRoleSkill" && role) {
-    const sk = (role.skills || []).find((s) => Number(s.kindId) === Number(msg.skillKindId));
+    const sid = String(msg.skillKindId);
+    let sk = Array.isArray(role.skills)
+      ? role.skills.find((s) => Number(s.kindId) === Number(sid))
+      : role.skills && role.skills[sid];
     if (!sk) return { code: 500, msg: "Skill not found" };
     const steps = msg.isMax ? Math.max(1, role.level - sk.level) : 1;
     let upgraded = 0;
@@ -171,6 +193,7 @@ function handleTeamRoute(route, msg, player) {
       upgraded++;
     }
     sync.skillPoint = player.skillPoint;
+    sync._temp.addPoint = upgraded;
     syncRole(role);
     return sync;
   }
@@ -189,11 +212,12 @@ function handleTeamRoute(route, msg, player) {
   }
 
   if (action === "upgradeRoleAwakeSkill" && role) {
-    role.awakeSkills = role.awakeSkills || [];
-    let sk = role.awakeSkills.find((s) => Number(s.kindId) === Number(msg.skillKindId));
+    if (Array.isArray(role.awakeSkills) || !role.awakeSkills) role.awakeSkills = {};
+    const sid = String(msg.skillKindId);
+    let sk = role.awakeSkills[sid];
     if (!sk) {
-      sk = { kindId: Number(msg.skillKindId), level: 0 };
-      role.awakeSkills.push(sk);
+      sk = { kindId: Number(sid), level: 0 };
+      role.awakeSkills[sid] = sk;
     }
     sk.level = Math.min(100, sk.level + (msg.isMax ? 5 : 1));
     syncRole(role);
@@ -257,8 +281,14 @@ function handleTeamRoute(route, msg, player) {
     const meta = dataApi.findEntityById(it.kindId);
     const prefix = action.replace("equip", "").toLowerCase();
     const slotKey = (meta && meta.equipmentType) || `${prefix}Item_1`;
+    role.equipments = ensureRoleEquipments(role.equipments);
     const prev = role.equipments[slotKey];
-    role.equipments[slotKey] = { kindId: it.kindId, level: (it.extra && it.extra.level) || 1, star: (it.extra && it.extra.star) || 1, extra: it.extra || {} };
+    role.equipments[slotKey] = {
+      kindId: it.kindId,
+      level: (it.extra && it.extra.level) || 1,
+      star: (it.extra && it.extra.star) || 1,
+      extra: it.extra || {}
+    };
     playerService.reduceBagByIdx(player, msg.bagIndex, 1, sync);
     if (prev && prev.kindId) playerService.addEntity(player, prev.kindId, 1, prev.extra || {}, sync);
     syncRole(role);
@@ -269,7 +299,7 @@ function handleTeamRoute(route, msg, player) {
     const prev = role.equipments[msg.equipmentType];
     if (prev && prev.kindId) {
       playerService.addEntity(player, prev.kindId, 1, prev.extra || {}, sync);
-      delete role.equipments[msg.equipmentType];
+      role.equipments[msg.equipmentType] = null;
     }
     syncRole(role);
     return sync;
@@ -294,6 +324,7 @@ function handleTeamRoute(route, msg, player) {
     sync.friendshipUnlockMap = player.friendshipUnlockMap;
     sync.team = { roles: player.team.roles, friendshipAttr: player.team.friendshipAttr };
     sync.power = player.power;
+    sync.topPower = player.topPower;
     return sync;
   }
 

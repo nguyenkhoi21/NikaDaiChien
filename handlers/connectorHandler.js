@@ -53,8 +53,10 @@ function handleConnectorRoute(route, msg, session, reqHeaders) {
 
   if (route === "connector.playerHandler.getPlayers") {
     const list = getPlayersByUserId(session.uid, session.oldServerId).map((p) => ({
+      _id: p.id,
       id: p.id,
       name: p.name,
+      userId: p.userId,
       level: p.level,
       serverId: p.serverId,
       oldServerId: p.oldServerId,
